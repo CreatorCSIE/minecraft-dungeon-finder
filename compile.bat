@@ -26,13 +26,8 @@ if errorlevel 1 (
 )
 del sources.txt
 
-echo Merging library classes into build...
-pushd build
-jar xf ..\lib\lwjgl.jar
-jar xf ..\lib\lwjgl_util.jar
-jar xf ..\lib\jinput.jar
-popd
-
+rem NOTE: lwjgl / jinput are compile-time dependencies only, NOT bundled into the jar.
+rem They are loaded as external libraries at runtime via run.bat -cp.
 echo Packaging dungeon-finder.jar ...
 jar cfe dungeon-finder.jar dungeon.app.DungeonMapApp -C build .
 

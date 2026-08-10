@@ -13,6 +13,7 @@ if not exist dungeon-finder.jar (
   goto :eof
 )
 
-java "-Djava.library.path=natives" -jar dungeon-finder.jar %*
+rem 以 -cp 方式运行，lwjgl / jinput 作为外置库加载（不打包进 dungeon-finder.jar）
+java "-Djava.library.path=natives" -cp "dungeon-finder.jar;lib\lwjgl.jar;lib\lwjgl_util.jar;lib\jinput.jar" dungeon.app.DungeonMapApp %*
 
 endlocal
