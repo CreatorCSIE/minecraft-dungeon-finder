@@ -1,6 +1,6 @@
 # Dungeon Finder (Java)
 
-一个用于查找 Minecraft 版本 `inf-20100625-1947` 至 `1.4.5`（未测试）中**地牢**（含刷怪笼）位置的可视化工具，是 Rust/WASM 版 [monolith-renderer](https://github.com/kahomayo/monolith-renderer) 生态的 Java + LWJGL2 衍生项目。
+一个用于查找 Minecraft 版本 `inf-20100625-1917` 至 `1.4.5`（未测试）中**地牢**（含刷怪笼）位置的可视化工具，是 Rust/WASM 版 [monolith-renderer](https://github.com/kahomayo/monolith-renderer) 生态的 Java + LWJGL2 衍生项目。
 
 地牢生成依赖 3D 地形（含洞穴），因此本工具逐区块复刻完整地形后判定地牢位置，结果与游戏内部生成完全一致；渲染时仅使用 X/Z 平面。
 
