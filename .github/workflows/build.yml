@@ -1,0 +1,36 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Compile
+        run: |
+          mkdir -p build
+          javac -encoding UTF-8 -d build \
+            -cp "lib/lwjgl.jar:lib/lwjgl_util.jar:lib/jinput.jar" \
+            $(find src -name '*.java')
+
+      - name: Verify core algorithm
+        run: java -cp build dungeon.Verify
+
+      - name: Package jar
+        run: jar cfe dungeon-finder.jar dungeon.app.DungeonMapApp -C build .
+
+      - name: Show result
+        run: ls -lh dungeon-finder.jar
