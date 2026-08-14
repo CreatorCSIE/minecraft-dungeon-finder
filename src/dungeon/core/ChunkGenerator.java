@@ -34,6 +34,9 @@ public final class ChunkGenerator {
 
     private final long worldSeed;
     private final GameVersion version;
+    // a1.2.6 与 b1.4 的地形改用独立命名空间 worldgen 的「海洋修正」密度场；
+    // b1.4 预置的逻辑覆盖至 b1.7.3（两版生成代码完全相同），其余版本沿用本类内嵌的 inf 版地形生成。
+    private final worldgen.AlphaBetaTerrainGen alphaBetaTerrain;
     private final ScaledFractalNoise noiseGen1;
     private final ScaledFractalNoise noiseGen2;
     private final ScaledFractalNoise noiseGen3;
@@ -73,6 +76,16 @@ public final class ChunkGenerator {
     public ChunkGenerator(long seed, GameVersion version, File diskCacheFile) {
         this.worldSeed = seed;
         this.version = version == null ? GameVersion.INF_20100625 : version;
+        switch (this.version) {
+            case ALPHA_1_2_6:
+                alphaBetaTerrain = new worldgen.AlphaBetaTerrainGen(seed, worldgen.AlphaBetaTerrainGen.Kind.A126);
+                break;
+            case BETA_1_4:
+                alphaBetaTerrain = new worldgen.AlphaBetaTerrainGen(seed, worldgen.AlphaBetaTerrainGen.Kind.B14_PLUS);
+                break;
+            default:
+                alphaBetaTerrain = null;
+        }
         this.diskFile = diskCacheFile;
         this.diskEnabled = diskCacheFile != null;
         java.util.Random random = new java.util.Random(seed);
@@ -192,7 +205,7 @@ public final class ChunkGenerator {
             byte[] t = terrainCache.get(key);
             if (t != null) return t;
         }
-        byte[] t = generateTerrain(cx, cz);
+        byte[] t = alphaBetaTerrain != null ? alphaBetaTerrain.generate(cx, cz) : generateTerrain(cx, cz);
         synchronized (terrainLock) {
             byte[] existing = terrainCache.get(key);
             if (existing != null) return existing;
@@ -513,7 +526,7 @@ public final class ChunkGenerator {
         return result;
     }
 
-    /** 模拟该区块四次 populate 地牢尝试（使用 4 个邻接地形的副本，避免污染缓存）。 */
+    /** 模拟该区块各版本的 populate 地牢尝试（使用 4 个邻接地形的副本，避免污染缓存）。 */
     private List<int[]> computeDungeons(int cx, int cz) {
         byte[] t00 = terrain(cx, cz).clone();
         byte[] t10 = terrain(cx + 1, cz).clone();
@@ -525,8 +538,14 @@ public final class ChunkGenerator {
         long j8 = (rand.nextLong() / 2L << 1) + 1L;
         rand.setSeed((long) cx * j6 + (long) cz * j8 ^ worldSeed);
 
-        List<int[]> result = new ArrayList<>(4);
-        for (int a = 0; a < 4; a++) {
+        // a1.2.6/b1.4 起：尝试前可能有水湖/岩浆湖生成（消费 RNG 并修改地形，影响地牢位置）
+        if (version.hasLakes()) {
+            simulateLakes(t00, t10, t01, t11, cx, cz, rand);
+        }
+
+        int tries = version.dungeonTries();
+        List<int[]> result = new ArrayList<>(tries);
+        for (int a = 0; a < tries; a++) {
             int x = cx * 16 + rand.nextInt(16) + 8;
             int y = rand.nextInt(128);
             int z = cz * 16 + rand.nextInt(16) + 8;
@@ -536,6 +555,126 @@ public final class ChunkGenerator {
             }
         }
         return result;
+    }
+
+    /**
+     * 复刻 a1.2.6/b1.4 的 ChunkProviderGenerate.populate 湖泊段（水湖 + 岩浆湖）。
+     * 精确消费 RNG；湖泊成功与否均保持与原版一致的 nextInt/nextDouble 序列。
+     */
+    private void simulateLakes(byte[] t00, byte[] t10, byte[] t01, byte[] t11,
+                               int cx, int cz, JavaRandom rand) {
+        // 水湖：nextInt(4)==0 时生成（判定本身恒消费 1 次）
+        if (rand.nextInt(4) == 0) {
+            int x = cx * 16 + rand.nextInt(16) + 8;
+            int y = rand.nextInt(128);
+            int z = cz * 16 + rand.nextInt(16) + 8;
+            lakeGenerate(t00, t10, t01, t11, cx, cz, rand, x, y, z, WATER_MOVING);
+        }
+        // 岩浆湖：nextInt(8)==0；y = nextInt(nextInt(120)+8)，y<64 或 nextInt(10)==0 才生成
+        if (rand.nextInt(8) == 0) {
+            int x = cx * 16 + rand.nextInt(16) + 8;
+            int y = rand.nextInt(rand.nextInt(120) + 8);
+            int z = cz * 16 + rand.nextInt(16) + 8;
+            if (y < 64 || rand.nextInt(10) == 0) {
+                lakeGenerate(t00, t10, t01, t11, cx, cz, rand, x, y, z, LAVA);
+            }
+        }
+    }
+
+    /**
+     * 复刻 a1.2.6/b1.4 的 WorldGenLakes.generate（该版本无岩浆→石头替换，与 b1.8 不同）。
+     * RNG 消费：nextInt(4)+4 个椭球 × 每椭球 6 次 nextDouble；其余循环不消费 RNG。
+     */
+    private void lakeGenerate(byte[] t00, byte[] t10, byte[] t01, byte[] t11,
+                              int cx, int cz, JavaRandom rand, int x, int y, int z, int blockId) {
+        x -= 8;
+        z -= 8;
+        while (y > 0 && getBlock(t00, t10, t01, t11, cx, cz, x, y, z) == 0) {
+            y--;
+        }
+        y -= 4;
+
+        boolean[] flags = new boolean[2048];
+        int i7 = rand.nextInt(4) + 4;
+        for (int i8 = 0; i8 < i7; i8++) {
+            double d9 = rand.nextDouble() * 6.0 + 3.0;
+            double d11 = rand.nextDouble() * 4.0 + 2.0;
+            double d13 = rand.nextDouble() * 6.0 + 3.0;
+            double d15 = rand.nextDouble() * (16.0 - d9 - 2.0) + 1.0 + d9 / 2.0;
+            double d17 = rand.nextDouble() * (8.0 - d11 - 4.0) + 2.0 + d11 / 2.0;
+            double d19 = rand.nextDouble() * (16.0 - d13 - 2.0) + 1.0 + d13 / 2.0;
+            for (int i21 = 1; i21 < 15; i21++) {
+                for (int i22 = 1; i22 < 15; i22++) {
+                    for (int i23 = 1; i23 < 7; i23++) {
+                        double d24 = ((double) i21 - d15) / (d9 / 2.0);
+                        double d26 = ((double) i23 - d17) / (d11 / 2.0);
+                        double d28 = ((double) i22 - d19) / (d13 / 2.0);
+                        if (d24 * d24 + d26 * d26 + d28 * d28 < 1.0) {
+                            flags[(i21 * 16 + i22) * 8 + i23] = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 边界判定：i10>=4 处液体即失败；i10<4 处非实心且非目标块即失败
+        for (int i8 = 0; i8 < 16; i8++) {
+            for (int i32 = 0; i32 < 16; i32++) {
+                for (int i10 = 0; i10 < 8; i10++) {
+                    boolean isEdge = !flags[(i8 * 16 + i32) * 8 + i10]
+                            && ((i8 < 15 && flags[((i8 + 1) * 16 + i32) * 8 + i10])
+                            || (i8 > 0 && flags[((i8 - 1) * 16 + i32) * 8 + i10])
+                            || (i32 < 15 && flags[(i8 * 16 + i32 + 1) * 8 + i10])
+                            || (i32 > 0 && flags[(i8 * 16 + (i32 - 1)) * 8 + i10])
+                            || (i10 < 7 && flags[(i8 * 16 + i32) * 8 + i10 + 1])
+                            || (i10 > 0 && flags[(i8 * 16 + i32) * 8 + (i10 - 1)]));
+                    if (isEdge) {
+                        int id = getBlock(t00, t10, t01, t11, cx, cz, x + i8, y + i10, z + i32);
+                        if (i10 >= 4 && isLiquid(id)) return;
+                        if (i10 < 4 && !isSolid((byte) id) && id != blockId) return;
+                    }
+                }
+            }
+        }
+
+        // 填充：i10>=4 空气，否则水/岩浆
+        for (int i8 = 0; i8 < 16; i8++) {
+            for (int i32 = 0; i32 < 16; i32++) {
+                for (int i10 = 0; i10 < 8; i10++) {
+                    if (flags[(i8 * 16 + i32) * 8 + i10]) {
+                        setBlock(t00, t10, t01, t11, cx, cz, x + i8, y + i10, z + i32,
+                                i10 >= 4 ? 0 : blockId);
+                    }
+                }
+            }
+        }
+
+        // dirt → grass（原版需天空光照>0；此处按"上方无实心块"简化，不影响地牢实心判定）
+        for (int i8 = 0; i8 < 16; i8++) {
+            for (int i32 = 0; i32 < 16; i32++) {
+                for (int i10 = 4; i10 < 8; i10++) {
+                    if (flags[(i8 * 16 + i32) * 8 + i10]
+                            && getBlock(t00, t10, t01, t11, cx, cz, x + i8, y + i10 - 1, z + i32) == DIRT
+                            && hasSkyLight(t00, t10, t01, t11, cx, cz, x + i8, y + i10, z + i32)) {
+                        setBlock(t00, t10, t01, t11, cx, cz, x + i8, y + i10 - 1, z + i32, GRASS);
+                    }
+                }
+            }
+        }
+    }
+
+    /** 方块是否为液体（水/岩浆，Material.getIsLiquid）。 */
+    private static boolean isLiquid(int id) {
+        return id == WATER_MOVING || id == WATER || id == LAVA;
+    }
+
+    /** 上方（不含本格）到 world 顶是否有实心块遮挡（简化版云光判定）。 */
+    private boolean hasSkyLight(byte[] t00, byte[] t10, byte[] t01, byte[] t11,
+                                int cx, int cz, int x, int y, int z) {
+        for (int yy = y + 1; yy < 128; yy++) {
+            if (isSolidBlock(t00, t10, t01, t11, cx, cz, x, yy, z)) return false;
+        }
+        return true;
     }
 
     private byte[] select(byte[] t00, byte[] t10, byte[] t01, byte[] t11,

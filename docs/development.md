@@ -33,6 +33,10 @@ src/dungeon/
     ├── DungeonMapApp.java  主窗口、主循环、输入与 UI
     ├── TileCache.java       异步瓦片缓存 + 后台线程池
     └── ...
+src/worldgen/            a1.2.6/b1.4 专属的「海洋修正」地形（见下文对应小节）
+│   ├── AlphaBetaTerrainGen.java  独立密度场（含洞穴），替代内嵌 inf 版地形
+│   └── OctaveNoise/SimplexNoise 等   该密度场的噪声组件
+src-minecraft-*/         各版本原版反编译源码（参考蓝本，不参与编译）
 Verify.java                  fractal 测试向量 + 地牢统计 + 瓦片预览
 ```
 
@@ -74,12 +78,21 @@ Minecraft 旧版本使用 `java.util.Random` 的 48 位 LCG。世界生成必须
 
 地形以 `byte[32768]` 缓存（LRU，`MAX_TERRAIN=8192`，约 256MB，容纳数千区块的邻接复用），地牢判定需要读取邻接区块，读取时用 `.clone()` 副本避免污染缓存。
 
+### a1.2.6 / b1.4 地形（worldgen 的海洋修正密度场）
+
+从 a1.2.6 起，地形生成整体换成了新实现（方块噪声密度场 + 海洋修正 / 大陆化），与 inf 版差异过大，`ChunkGenerator` 内嵌的 inf 版生成器无法复用。因此独立出与 dungeon 层平级的 `src/worldgen/`：
+
+- [`AlphaBetaTerrainGen`](../src/worldgen/AlphaBetaTerrainGen.java)（`Kind.A126` / `Kind.B14_PLUS`）按对应版本的 `ChunkProviderGenerate.provideChunk` 逐步移植：密度场采样 → 三线性插值 → 地表/基岩铺设 → 洞穴 pass（`MapGenCaves` 的 a1.2.6+ 递归版）；`generate(cx,cz)` 返回与内嵌生成器相同的 `x<<11 | z<<7 | y` 布局的 32KB 字节数组（含洞穴），因此上层缓存与地牢判定链路完全复用。
+- 版本细节差异：a1.2.6 水面用水动方块（`8`），b1.4 用水静方块（`9`）；b1.4 起引入砂岩；b1.4 与 b1.7.3 生成器代码逐行相同（仅生物群系类名不同），故预置 `B14_PLUS` 一个入口覆盖至 b1.7.3。
+- `ChunkGenerator` 构造按版本实例化对应 `Kind`，其余版本保持 `null` 走内嵌 inf 生成器；`terrain()` 取缓存时按实例分支，缓存 LRU 与 `.clone()` 语义对两个实现一致。
+
 ### 地牢判定（populate + WorldGenDungeons）
 
 `ChunkGenerator.getDungeons(cx,cz)` 模拟该区块的 `ChunkProviderGenerate.populate`：
 
 - RNG 种子 = `chunkX*j6 + chunkZ*j8 ^ worldSeed`，其中 `j6=(nextLong()/2<<1)+1`、`j8=(nextLong()/2<<1)+1`；
-- 每区块尝试 4 次，每次随机 `x = cx*16 + rand(16) + 8`、`y = rand(128)`、`z = cz*16 + rand(16) + 8`；
+- `a1.2.6`/`b1.4` 起：尝试前先模拟水湖（`nextInt(4)==0`）与岩浆湖（`nextInt(8)==0`），两者按原版顺序精确消费 RNG 并修改 4 邻地形副本（`simulateLakes` 复刻该版本 `WorldGenLakes.generate`，无 b1.8 的岩浆换石头逻辑）；
+- 尝试次数按版本：`inf-20100625-1917`/`a1.0.1` 每区块 4 次，`a1.0.14` 起 8 次；每次随机 `x = cx*16 + rand(16) + 8`、`y = rand(128)`、`z = cz*16 + rand(16) + 8`；
 - `dungeonGenerate` 复刻 `WorldGenDungeons.generate`：随机房间尺寸（`i6/i7 ∈ [2,3]`），要求地板（y-1）与天花板（y+4）均为实心、四周空气缺口 `i8 ∈ [1,5]` 才生成；
 - 生成时写出石砖/苔石墙、箱子（按原版顺序消耗 RNG 的 `nextInt`）与刷怪笼。
 
@@ -89,12 +102,13 @@ Minecraft 旧版本使用 `java.util.Random` 的 48 位 LCG。世界生成必须
 
 不同版本 `WorldGenDungeons` 中 `pickCheckLootItem` 的类型范围与额外分支不同，会改变箱子循环消费 RNG 的 `nextInt` 次数，从而影响刷怪笼 `mobID`。`GameVersion` 枚举抽象这些差异：
 
-| 版本 | loot 类型数 | 新增分支 |
-|------|:---:|---------|
-| `inf-20100625-1917` | 10 | 无 |
-| `a1.0.1` | 11 | 红石 |
-| `a1.0.14` | 12 | 红石 + 唱片 |
-| `b1.4` | 13 | 红石 + 唱片 + 可可豆 |
+| 版本 | loot 类型数 | 新增分支 | 尝试次数 | 湖泊 |
+|------|:---:|---------|:---:|:---:|
+| `inf-20100625-1917` | 10 | 无 | 4 | - |
+| `a1.0.1` | 11 | 红石 | 4 | - |
+| `a1.0.14` | 11 | 红石 + 唱片 | 8 | - |
+| `a1.2.6` | 11 | 红石 + 唱片 | 8 | 有 |
+| `b1.4` | 11 | 红石 + 唱片 + 可可豆 | 8 | 有 |
 
 `ChunkGenerator` 构造时接收版本，箱子循环内按版本消费 loot RNG（`nextInt(lootTypes)` + 各版本分支），并精确保留原版的惰性求值——红石/唱片条件不满足时返回 `null`、不消费槽位 `nextInt(27)`。`Verify` 中可用固定种子验证切换版本后同一地牢的 `mobID` 变化（例如 `-1995793183340471539` 在 `(-120,30,-138)` 的 mob 从 inf 的 Zombie 变为 a1.0.1 的 Spider）。
 
@@ -137,7 +151,7 @@ Minecraft 旧版本使用 `java.util.Random` 的 48 位 LCG。世界生成必须
 
 - 鼠标左键拖拽平移；滚轮/`+`/`-` 缩放（向上放大），以鼠标为锚点。
 - 左上角：种子输入框 + 应用按钮；左下角：X/Z 坐标输入框 + 应用按钮。
-- 种子框右侧：版本下拉菜单（`VER_X/VER_Y/VER_W/VER_H`，含 V 图标）。点击展开列出 4 个版本，当前版本高亮；选中后调用 `setVersion` 用当前种子重建生成器（自动换用新版本的磁盘缓存文件）。
+- 种子框右侧：版本下拉菜单（`VER_X/VER_Y/VER_W/VER_H`，含 V 图标）。点击展开列出 5 个版本，当前版本高亮；选中后调用 `setVersion` 用当前种子重建生成器（自动换用新版本的磁盘缓存文件）。
 - 输入框支持点击定位光标、拖拽选字、闪烁光标；坐标值仅在位置变化时跟随，静止时保持可编辑。
 - 点击红点：显示所点地牢的完整坐标（XYZ）与刷怪笼怪物 ID；提示信息跟随红点位置，缩放更新或超出视距时关闭，避免遮挡种子输入框。
 - 画面中心绘制 MC 样式反色十字准星（`GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_COLOR`）。
