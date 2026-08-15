@@ -143,10 +143,8 @@ public final class DungeonMapApp {
             while (Mouse.next()) {
                 int dw = Mouse.getEventDWheel();
                 if (dw != 0) {
-                    int mx = Mouse.getX();
-                    int my = Mouse.getY();
                     // 向上滚轮 = 放大（bpp 减小）；向下滚轮 = 缩小
-                    zoomBy(dw > 0 ? 1 : -1, mx, my);
+                    zoomBy(dw > 0 ? 1 : -1);
                 }
                 // 鼠标左键点击：检测 UI（输入框 / 应用按钮）
                 if (Mouse.getEventButton() == 0 && Mouse.getEventButtonState()) {
@@ -294,11 +292,11 @@ public final class DungeonMapApp {
                     break;
                 }
                 case Keyboard.KEY_EQUALS: case Keyboard.KEY_ADD: {
-                    zoomBy(1, Mouse.getX(), Mouse.getY());
+                    zoomBy(1);
                     break;
                 }
                 case Keyboard.KEY_MINUS: case Keyboard.KEY_SUBTRACT: {
-                    zoomBy(-1, Mouse.getX(), Mouse.getY());
+                    zoomBy(-1);
                     break;
                 }
                 default: break;
@@ -989,8 +987,7 @@ public final class DungeonMapApp {
         }
     }
 
-    private void zoomBy(int dir, int mx, int my) {
-        double oldBpp = blocksPerPixel();
+    private void zoomBy(int dir) {
         selectedDungeon = null; // 缩放后红点位置变化，关闭信息框
 
         if (dir > 0) { // 放大：方块/像素减半
@@ -1000,16 +997,8 @@ public final class DungeonMapApp {
             bpp *= 2.0;
             if (bpp > maxBpp()) bpp = maxBpp();
         }
-
-        double newBpp = blocksPerPixel();
-        if (newBpp == oldBpp) {
-            return; // 已到最远 / 最近，无变化
-        }
-        double ry = winH - my;
-        double bx = centerX + (mx - winW / 2.0) * oldBpp;
-        double bz = centerZ + (ry - winH / 2.0) * oldBpp;
-        centerX = bx - (mx - winW / 2.0) * newBpp;
-        centerZ = bz - (ry - winH / 2.0) * newBpp;
+        // 以十字准星（画面中心）为缩放锚点：centerX/centerZ 保持不变，
+        // 准星所指方块保持在画面中心。
     }
 
     /** 最远视野：窗口宽覆盖 WIDEST_BLOCKS 方块所对应的方块/像素。 */
