@@ -1,0 +1,4 @@
+# 批处理文件在 Windows 上需以 CRLF 换行，否则 cmd 执行可能出错。
+# 无论仓库内以何种换行存储，检出时都强制转换为 CRLF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
